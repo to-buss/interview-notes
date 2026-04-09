@@ -1106,4 +1106,412 @@ composite.addComponents(true, headerBuf, bodyBuf);
       },
     ],
   },
+  {
+    id: "security",
+    title: "9. Security",
+    icon: "🔐",
+    subtopics: [
+      {
+        id: "secure-code-review",
+        title: "Secure Code Review",
+        content: `A secure Java code review thinks in threat categories, not files. The 10 areas that matter most:\n\n1. Input Validation — validate at trust boundaries (HTTP, queues, DB). Use allow-lists, not block-lists. Validate type, length, format.\n2. Broken Access Control — always check ownership. Never assume a resource belongs to the caller just because they are authenticated.\n3. Injection (SQL, NoSQL, Command) — never concatenate user input into queries. Use parameterised queries or JPA named params.\n4. Sensitive Data — never log card numbers, IBAN, tokens. Mask before logging. Encrypt PII at field level.\n5. Cryptography — ban MD5/SHA-1 for security. Ban AES/ECB mode. Use AES/GCM, PBKDF2/bcrypt for passwords, SecureRandom for nonces.\n6. Error Handling — return generic messages to clients. Log detail internally only. Never send stack traces to clients.\n7. Deserialization — ban ObjectInputStream.readObject() on untrusted data. Ban @JsonTypeInfo(use = Id.CLASS) — see next subtopic.\n8. Dependencies — audit transitive dependencies (OWASP Dependency Check, Snyk, Dependabot). Old Jackson/Spring versions have known gadget chains.\n9. Concurrency & Race Conditions — check-then-act without synchronisation is a race condition. Use DB constraints + idempotency keys for payment flows.\n10. Business Logic Flaws — never trust client-supplied amounts or status. Recompute critical values server-side. Ask: can this be replayed? skipped? abused?`,
+        diagram: null,
+        code: `// ❌ Red flag: trusting raw input without validation
+String id = request.getParameter("id");
+repository.findById(id);
+
+// ✅ Allow-list validation with Bean Validation
+@Pattern(regexp = "[A-Z0-9_-]{1,50}")
+String id;
+
+// ❌ Broken access control — no ownership check
+Payment p = paymentRepo.findById(paymentId);
+return p;
+
+// ✅ Always verify ownership
+Payment p = paymentRepo.findById(paymentId);
+if (!p.getClientId().equals(authenticatedClientId)) {
+    throw new AccessDeniedException("Payment does not belong to caller");
+}
+
+// ❌ SQL injection via string concat
+String q = "SELECT * FROM users WHERE id = " + userId;
+
+// ✅ Parameterised JPA query
+@Query("SELECT u FROM User u WHERE u.id = :id")
+User findById(@Param("id") String id);
+
+// ❌ Logging sensitive data
+log.info("Payment request: {}", request); // request may contain IBAN/card
+
+// ✅ Mask before logging
+log.info("Payment request for clientId={}, amount={}", req.getClientId(), req.getAmount());
+
+// ❌ Dangerous crypto
+MessageDigest.getInstance("MD5");
+Cipher.getInstance("AES/ECB/PKCS5Padding");
+
+// ✅ Modern crypto
+Cipher.getInstance("AES/GCM/NoPadding");
+PasswordEncoder encoder = new BCryptPasswordEncoder();
+
+// ❌ Leaking internals to client
+return ResponseEntity.badRequest().body(e.getMessage());
+
+// ✅ Generic client message, detailed internal log
+log.error("Validation failed for clientId={}", clientId, e);
+return ResponseEntity.badRequest().body("Invalid request. Contact support.");`,
+      },
+      {
+        id: "json-type-info",
+        title: "@JsonTypeInfo Deserialization Risk",
+        content: `@JsonTypeInfo(use = Id.CLASS) tells Jackson: "the JSON payload will tell you which Java class to instantiate — trust it." This is the core problem.\n\nWhen enabled, Jackson reads a @class field from the incoming JSON and instantiates that class via reflection. An attacker can supply any fully-qualified class name on the JVM classpath. Certain classes (gadgets) have dangerous side effects during construction or property setting — TemplatesImpl being the most well-known, capable of triggering arbitrary bytecode execution.\n\nThis is not theoretical. Real CVEs (CVE-2017-7525 and many follow-ons) exploited exactly this in Jackson 2.x.\n\nId.MINIMAL_CLASS is equally dangerous — it just shortens the class name.\nenableDefaultTyping() / activateDefaultTyping() on ObjectMapper have the same effect.\n\nFix: use Id.NAME with an explicit @JsonSubTypes allow-list of known safe types. Or use manual dispatch (switch on a type string). Never let the payload control which class to instantiate.`,
+        diagram: null,
+        code: `// ❌ DANGEROUS — attacker controls which class Jackson instantiates
+@JsonTypeInfo(use = JsonTypeInfo.Id.CLASS)
+public abstract class Event {}
+
+// Attacker sends:
+// { "@class": "com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl",
+//   "bytecodes": ["<malicious>"], "transletName": "evil" }
+// Jackson instantiates TemplatesImpl → triggers RCE
+
+// ❌ Also dangerous — same attack surface, shorter name
+@JsonTypeInfo(use = JsonTypeInfo.Id.MINIMAL_CLASS)
+
+// ❌ Also dangerous on ObjectMapper level
+objectMapper.enableDefaultTyping(); // deprecated but still dangerous
+objectMapper.activateDefaultTyping(LaissezFaireSubTypeValidator.instance);
+
+// ✅ SAFE — explicit allow-list, attacker cannot inject arbitrary classes
+@JsonTypeInfo(
+    use = JsonTypeInfo.Id.NAME,
+    include = JsonTypeInfo.As.PROPERTY,
+    property = "type"
+)
+@JsonSubTypes({
+    @JsonSubTypes.Type(value = PaymentEvent.class, name = "payment"),
+    @JsonSubTypes.Type(value = RefundEvent.class,  name = "refund"),
+    @JsonSubTypes.Type(value = ChargebackEvent.class, name = "chargeback")
+})
+public abstract class Event {}
+
+// JSON the attacker sends: { "type": "hacked" } → Jackson returns null, no gadget
+
+// ✅ Safest — manual dispatch, zero reflection risk
+public Event deserialize(String json) throws IOException {
+    JsonNode node = mapper.readTree(json);
+    return switch (node.get("type").asText()) {
+        case "payment"    -> mapper.treeToValue(node, PaymentEvent.class);
+        case "refund"     -> mapper.treeToValue(node, RefundEvent.class);
+        default           -> throw new IllegalArgumentException("Unknown event type");
+    };
+}`,
+      },
+    ],
+  },
+  {
+    id: "elasticsearch",
+    title: "10. Elasticsearch",
+    icon: "🔍",
+    subtopics: [
+      {
+        id: "es-indexes",
+        title: "How Indexes Work",
+        content: `Elasticsearch is a distributed search and analytics engine built on Apache Lucene. It trades strict consistency and transactions for extremely fast full-text search.\n\nKey mental model shifts from SQL:\n• Index ≈ database (not a SQL index). It is a logical container for documents split into shards.\n• Document ≈ row — a JSON object, the smallest unit of storage. Documents are immutable; updates are delete + reinsert.\n• Mapping ≈ schema — defines how each field is indexed and stored.\n• text field: analysed (tokenised, lowercased, stemmed) — for full-text search.\n• keyword field: stored as-is — for exact match and filtering.\n\nThe Inverted Index is the core data structure. Traditional DBs map Document → words. Elasticsearch maps Word → list of documents. A search for "capital gains" looks up both terms in the inverted index, intersects the document lists, and scores relevance. This is why ES is fast and why SQL LIKE '%text%' is slow.\n\nIndexing pipeline: analyse text → build inverted index entries → write to in-memory buffer → flush to disk (Lucene segment) → searchable. Typical delay ~1 second — hence "near real-time."\n\nShards: each index is split into N primary shards (Lucene indexes). Shards live on different nodes and are queried in parallel (fan-out → fan-in). Replicas provide failover and extra read throughput. If a node dies, a replica is promoted to primary.`,
+        diagram: `
+Inverted Index (heart of Elasticsearch):
+
+  Documents:
+    Doc 1: "capital gains tax"
+    Doc 2: "capital asset"
+
+  Inverted index built:
+    capital  →  [Doc 1, Doc 2]
+    gains    →  [Doc 1]
+    tax      →  [Doc 1]
+    asset    →  [Doc 2]
+
+  Query "capital gains":
+    lookup capital → [Doc 1, Doc 2]
+    lookup gains   → [Doc 1]
+    intersect      → [Doc 1]  ← returned, scored by relevance
+
+  Index → shards across nodes:
+  ┌─────────────────────────────────────┐
+  │ Index: legal_docs  (5 shards)       │
+  │  [Shard 0] [Shard 1] [Shard 2]     │  Node 1
+  │  [Shard 3] [Shard 4]               │  Node 2
+  │  [Replica 0..4]                    │  Node 3
+  └─────────────────────────────────────┘`,
+        code: `// Create index with explicit mapping
+PUT /legal_docs
+{
+  "settings": { "number_of_shards": 5, "number_of_replicas": 1 },
+  "mappings": {
+    "properties": {
+      "title":          { "type": "text" },      // analysed, full-text search
+      "court":          { "type": "keyword" },   // exact match / aggregation
+      "effective_date": { "type": "date" },
+      "amount":         { "type": "double" }
+    }
+  }
+}
+
+// Index a document
+POST /legal_docs/_doc
+{
+  "doc_id":   "ITAT_2021_123",
+  "title":    "Capital Gains Exemption under Section 54F",
+  "court":    "ITAT",
+  "content":  "The assessee claimed exemption under section 54F..."
+}
+
+// Full-text search
+POST /legal_docs/_search
+{
+  "query": {
+    "match": { "title": "capital gains" }
+  }
+}
+
+// Exact filter (keyword) + full-text (text) combined
+POST /legal_docs/_search
+{
+  "query": {
+    "bool": {
+      "must":   [{ "match":  { "title": "capital gains" } }],
+      "filter": [{ "term":   { "court": "ITAT" }          }]
+    }
+  }
+}`,
+      },
+      {
+        id: "es-autocomplete",
+        title: "Autocomplete with Completion Suggester",
+        content: `For type-ahead / autocomplete (e.g. user types "capit" → suggestions: "capital gains", "capital asset", "capital receipt"), the Completion Suggester is the correct choice over a match query.\n\nWhy Completion Suggester:\n• Purpose-built for prefix-based type-ahead\n• Backed by an in-memory FST (finite state transducer) — sub-millisecond latency\n• Supports weighted ranking (important terms appear first)\n• Not suitable for mid-string or fuzzy matching — use match query with ngrams for those cases\n\nDesign pattern: index terms (concepts, section names, legal vocabulary) separately from full documents. This keeps the autocomplete index small and fast.\n\nWhen to use alternatives:\n• Fuzzy matching → match query with fuzziness\n• Mid-string search → ngram tokeniser on a text field\n• Combined autocomplete + search → completion for suggestions, then full match query on selection`,
+        diagram: `
+User types: "capit"
+      │
+      ▼
+POST /legal_autocomplete/_search  (Completion Suggester)
+      │
+      ▼  FST prefix lookup (in-memory, ~1ms)
+      │
+      ▼
+suggestions ranked by weight:
+  1. "capital gains"    (weight: 10)
+  2. "capital asset"    (weight: 8)
+  3. "capital receipt"  (weight: 6)
+      │
+      ▼
+GET /autocomplete?query=capit
+→ { "suggestions": ["capital gains", "capital asset", "capital receipt"] }`,
+        code: `// 1. Create autocomplete index with completion field
+PUT /legal_autocomplete
+{
+  "mappings": {
+    "properties": {
+      "term": {
+        "type": "completion",
+        "analyzer": "simple",
+        "preserve_separators": true,
+        "max_input_length": 50
+      },
+      "category": { "type": "keyword" }
+    }
+  }
+}
+
+// 2. Index terms with weights
+POST /legal_autocomplete/_doc
+{ "term": { "input": ["capital gains", "capital gain tax"], "weight": 10 }, "category": "TAX_CONCEPT" }
+
+POST /legal_autocomplete/_doc
+{ "term": { "input": ["capital asset"], "weight": 8 }, "category": "TAX_CONCEPT" }
+
+// 3. Query — user typed "capit"
+POST /legal_autocomplete/_search
+{
+  "suggest": {
+    "tax-suggest": {
+      "prefix": "capit",
+      "completion": { "field": "term", "size": 5 }
+    }
+  }
+}
+
+// 4. Java service (Elasticsearch Java API Client 8.x)
+public class AutocompleteService {
+
+    private final ElasticsearchClient client;
+
+    public List<String> suggestTerms(String prefix) throws IOException {
+        SearchResponse<Void> response = client.search(s -> s
+            .index("legal_autocomplete")
+            .suggest(su -> su
+                .suggesters("tax-suggest", sug -> sug
+                    .prefix(prefix)
+                    .completion(c -> c.field("term").size(5))
+                )
+            ),
+            Void.class
+        );
+        return response.suggest()
+            .get("tax-suggest").get(0).options().stream()
+            .map(CompletionSuggestOption::text)
+            .collect(Collectors.toList());
+    }
+}
+
+// 5. REST endpoint
+// GET /autocomplete?query=capit
+// → { "suggestions": ["capital gains", "capital asset", "capital receipt"] }`,
+      },
+    ],
+  },
+  {
+    id: "system-design",
+    title: "11. System Design",
+    icon: "🏛️",
+    subtopics: [
+      {
+        id: "payee-storage",
+        title: "Payee Storage at Global Scale",
+        content: `Problem: store payees for millions of clients (each with hundreds of payees) across multiple geographic regions with high availability and low latency.\n\nAccess pattern analysis (drives everything):\n• List all payees for a client — very frequent\n• Get a specific payee — on every payment\n• Add / update / deactivate a payee — moderate\n• Cross-client queries — rare, admin only\n\nKey insight: almost all access is scoped to a single client → partition by client_id.\n\nStorage choice: a partitioned NoSQL store (DynamoDB, Cosmos DB, Cassandra) over a single relational DB, because:\n• Horizontal scaling without re-sharding\n• Client-scoped queries are O(1) partition reads\n• Built-in geo-replication\n\nMulti-region strategy — Primary-write, Multi-read:\n• Each client has a home region. Writes go to home region (strong consistency).\n• Reads are served locally from replicas (eventual consistency acceptable for UI).\n• Avoids write conflicts — simpler than multi-master, much less error-prone for payments.\n• Multi-master only if global write latency is a hard requirement — adds significant conflict resolution complexity.\n\nSecurity: encrypt account numbers / IBAN at field level. Tokenise where possible. Enforce row-level isolation (one client cannot see another's payees). Full audit trail — soft-delete only, never hard-delete.`,
+        diagram: `
+  Client App
+      │
+      ▼
+  API Gateway (auth, rate limiting)
+      │
+      ▼
+  Payee Service (stateless, horizontally scaled)
+      │
+      ├──► Redis Cache (key: client_id, TTL: 30s)
+      │         │ cache miss
+      ▼         ▼
+  Partitioned NoSQL DB
+  ┌────────────────────────────────┐
+  │  PK: client_id  SK: payee_id  │
+  │  client_123 | payee_001       │
+  │  client_123 | payee_002       │
+  │  client_456 | payee_001       │
+  └────────────────────────────────┘
+       EU Region (primary writes)
+            │  async replication
+       ┌────┴────┐
+       ▼         ▼
+    US Region   APAC Region  (local reads)
+
+  Trade-offs:
+  Partition by client_id  →  easy scale, no cross-client queries
+  NoSQL                   →  scalability over joins/transactions
+  Primary-write region    →  simple consistency, easier compliance
+  Eventual reads          →  slight staleness acceptable for payee list UI`,
+        code: `// DynamoDB table design (AWS SDK v2)
+// PK = clientId (partition key), SK = payeeId (sort key)
+
+// List all payees for a client — single partition read, O(1)
+QueryRequest listPayees = QueryRequest.builder()
+    .tableName("Payees")
+    .keyConditionExpression("clientId = :cid")
+    .expressionAttributeValues(Map.of(":cid", AttributeValue.fromS(clientId)))
+    .build();
+QueryResponse response = dynamoDb.query(listPayees);
+
+// Get one payee — GetItem, single key lookup
+GetItemRequest getPayee = GetItemRequest.builder()
+    .tableName("Payees")
+    .key(Map.of(
+        "clientId", AttributeValue.fromS(clientId),
+        "payeeId",  AttributeValue.fromS(payeeId)
+    ))
+    .consistentRead(true) // strong consistency for payment flows
+    .build();
+
+// Deactivate a payee — soft delete via status update
+UpdateItemRequest deactivate = UpdateItemRequest.builder()
+    .tableName("Payees")
+    .key(Map.of(
+        "clientId", AttributeValue.fromS(clientId),
+        "payeeId",  AttributeValue.fromS(payeeId)
+    ))
+    .updateExpression("SET #s = :inactive, updatedAt = :now")
+    .expressionAttributeNames(Map.of("#s", "status"))
+    .expressionAttributeValues(Map.of(
+        ":inactive", AttributeValue.fromS("INACTIVE"),
+        ":now",      AttributeValue.fromS(Instant.now().toString())
+    ))
+    .conditionExpression("clientId = :cid") // ownership guard
+    .expressionAttributeValues(Map.of(":cid", AttributeValue.fromS(clientId)))
+    .build();`,
+      },
+      {
+        id: "dynamodb",
+        title: "DynamoDB Deep Dive",
+        content: `DynamoDB is a fully managed, distributed key-value and document database designed for massive scale, single-digit millisecond latency, and high availability. Mental model: "a globally scalable hash table with optional sorting."\n\nCore concepts:\n• Table — equivalent to a SQL table\n• Item — equivalent to a row; stored as JSON-like attributes; schema-flexible except for keys\n• Attributes — String, Number, Boolean, List, Map\n\nKey types:\n• Partition key only (simple key) — good for one item per key lookups\n• Partition key + Sort key (composite) — allows multiple items per partition, range queries, ordered data. This is the payee model: PK=clientId, SK=payeeId.\n\nScaling: DynamoDB hashes the partition key and distributes across physical partitions automatically. Hot partition problem: if many clients use the same PK (e.g. "ALL_PAYEES"), all traffic hits one partition. Fix: choose high-cardinality keys (clientId, orderId).\n\nQuery model — intentionally limited:\n• GetItem, Query (PK + optional SK conditions), BatchGet — all fast\n• Scan — reads every item; avoid at scale\n• No joins, no ad-hoc queries by design\n\nSecondary indexes:\n• GSI (Global Secondary Index) — different PK/SK, eventually consistent, costs extra writes. Use for "find payee across clients" scenarios.\n• LSI (Local Secondary Index) — same PK, different SK, strongly consistent, must be defined at table creation.\n\nDynamoDB is great for: user profiles, sessions, payments, payees, idempotency keys, event metadata.\nDynamoDB is bad for: ad-hoc queries, joins, reporting, analytics, full-text search — pair with Elasticsearch/Athena for those.`,
+        diagram: `
+  Partition key hashing:
+  clientId "client_123" → hash → physical partition 3
+  clientId "client_456" → hash → physical partition 7
+  clientId "client_789" → hash → physical partition 1
+                                   (even distribution ✅)
+
+  Hot partition — bad key design:
+  PK = "ALL_PAYEES" → hash → always partition 5 → overloaded ❌
+
+  Composite key layout:
+  PK (clientId)  | SK (payeeId)   | name    | status
+  ───────────────────────────────────────────────────
+  client_123     | payee_001      | Alice   | ACTIVE
+  client_123     | payee_002      | Bob     | ACTIVE
+  client_123     | payee_003      | Carol   | INACTIVE
+  client_456     | payee_001      | Dave    | ACTIVE
+
+  GSI for reverse lookup (payeeId → clientId):
+  GSI-PK (payeeId) | GSI-SK (clientId)
+  payee_001        | client_123
+  payee_001        | client_456`,
+        code: `// DynamoDB table provisioning (CloudFormation / CDK concept)
+// PK = clientId, SK = payeeId
+// GSI: PK = payeeId (find which clients share a payee)
+
+// Consistency choice at read time
+GetItemRequest strongRead = GetItemRequest.builder()
+    .tableName("Payees")
+    .key(key)
+    .consistentRead(true)   // strong — use for payment flows
+    .build();
+
+GetItemRequest eventualRead = GetItemRequest.builder()
+    .tableName("Payees")
+    .key(key)
+    .consistentRead(false)  // eventual (default) — fine for UI lists
+    .build();
+
+// Conditional write — add payee only if it doesn't already exist
+PutItemRequest addPayee = PutItemRequest.builder()
+    .tableName("Payees")
+    .item(Map.of(
+        "clientId",  AttributeValue.fromS(clientId),
+        "payeeId",   AttributeValue.fromS(UUID.randomUUID().toString()),
+        "name",      AttributeValue.fromS(name),
+        "iban",      AttributeValue.fromS(encryptedIban),  // encrypted at field level
+        "status",    AttributeValue.fromS("ACTIVE"),
+        "createdAt", AttributeValue.fromS(Instant.now().toString())
+    ))
+    .conditionExpression("attribute_not_exists(clientId) AND attribute_not_exists(payeeId)")
+    .build();
+
+// GSI query — find all clients that have a given payee (admin use case)
+QueryRequest gsiQuery = QueryRequest.builder()
+    .tableName("Payees")
+    .indexName("PayeeId-ClientId-GSI")
+    .keyConditionExpression("payeeId = :pid")
+    .expressionAttributeValues(Map.of(":pid", AttributeValue.fromS(payeeId)))
+    .build();`,
+      },
+    ],
+  },
 ];

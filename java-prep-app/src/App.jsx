@@ -50,7 +50,7 @@ function App() {
             </button>
           ))}
         </div>
-        <span className="top-bar-badge">ING Ready</span>
+        <span className="top-bar-badge">AI will destroy all learning</span>
       </header>
 
       <div className="body-layout">
