@@ -1,6 +1,7 @@
 import { useState } from "react";
 import Sidebar from "./components/Sidebar";
 import ContentPane from "./components/ContentPane";
+import Resume from "./components/Resume";
 import { topics } from "./data/topics";
 import { kafkaTopics } from "./data/kafka-topics";
 import "./App.css";
@@ -10,11 +11,14 @@ const SUBJECTS = [
   { id: "kafka", label: "Kafka", data: kafkaTopics },
 ];
 
+const PAGES = ["resume", "prep"];
+
 function App() {
-  const [subject, setSubject]               = useState("java");
-  const [activeTopic, setActiveTopic]       = useState(topics[0].id);
-  const [activeSubtopic, setActiveSubtopic] = useState(topics[0].subtopics[0].id);
-  const [sidebarOpen, setSidebarOpen]       = useState(true);
+  const [page, setPage]                        = useState("resume");
+  const [subject, setSubject]                  = useState("java");
+  const [activeTopic, setActiveTopic]          = useState(topics[0].id);
+  const [activeSubtopic, setActiveSubtopic]    = useState(topics[0].subtopics[0].id);
+  const [sidebarOpen, setSidebarOpen]          = useState(true);
 
   const currentSubjectData = SUBJECTS.find((s) => s.id === subject).data;
   const currentTopic       = currentSubjectData.find((t) => t.id === activeTopic);
@@ -32,13 +36,35 @@ function App() {
     setActiveSubtopic(data[0].subtopics[0].id);
   }
 
+  function switchPage(newPage) {
+    setPage(newPage);
+    if (newPage === "prep") setSidebarOpen(true);
+  }
+
   return (
-    <div className={`app-shell ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
+    <div className={`app-shell ${sidebarOpen && page === "prep" ? "" : "sidebar-collapsed"}`}>
       <header className="top-bar">
+
+        <nav className="page-nav">
+          <button
+            className={`page-nav-btn ${page === "resume" ? "active" : ""}`}
+            onClick={() => switchPage("resume")}
+          >
+            About Me
+          </button>
+          <button
+            className={`page-nav-btn ${page === "prep" ? "active" : ""}`}
+            onClick={() => switchPage("prep")}
+          >
+            Prep Kit
+          </button>
+        </nav>
+      </header>
+
+      <div className={`sub-bar ${page === "prep" ? "sub-bar-visible" : ""}`}>
         <button className="menu-btn" onClick={() => setSidebarOpen((o) => !o)}>
           ☰
         </button>
-        <span className="top-bar-title">Senior Interview Prep</span>
         <div className="subject-switcher">
           {SUBJECTS.map((s) => (
             <button
@@ -50,28 +76,33 @@ function App() {
             </button>
           ))}
         </div>
-        <span className="top-bar-badge">AI will destroy all learning</span>
-      </header>
-
-      <div className="body-layout">
-        <Sidebar
-          topics={currentSubjectData}
-          activeTopic={activeTopic}
-          activeSubtopic={activeSubtopic}
-          onSelect={selectSubtopic}
-          open={sidebarOpen}
-        />
-        <main className="content-area">
-          {currentSubtopic && (
-            <ContentPane
-              topic={currentTopic}
-              subtopic={currentSubtopic}
-              allSubtopics={currentTopic.subtopics}
-              onNavigate={(sid) => selectSubtopic(activeTopic, sid)}
-            />
-          )}
-        </main>
       </div>
+
+      {page === "resume" ? (
+        <main className="resume-area">
+          <Resume />
+        </main>
+      ) : (
+        <div className="body-layout">
+          <Sidebar
+            topics={currentSubjectData}
+            activeTopic={activeTopic}
+            activeSubtopic={activeSubtopic}
+            onSelect={selectSubtopic}
+            open={sidebarOpen}
+          />
+          <main className="content-area">
+            {currentSubtopic && (
+              <ContentPane
+                topic={currentTopic}
+                subtopic={currentSubtopic}
+                allSubtopics={currentTopic.subtopics}
+                onNavigate={(sid) => selectSubtopic(activeTopic, sid)}
+              />
+            )}
+          </main>
+        </div>
+      )}
     </div>
   );
 }
