@@ -2,6 +2,7 @@ import { useState } from "react";
 import Sidebar from "./components/Sidebar";
 import ContentPane from "./components/ContentPane";
 import Resume from "./components/Resume";
+import LegalLens from "./components/LegalLens";
 import { topics } from "./data/topics";
 import { kafkaTopics } from "./data/kafka-topics";
 import "./App.css";
@@ -11,7 +12,7 @@ const SUBJECTS = [
   { id: "kafka", label: "Kafka", data: kafkaTopics },
 ];
 
-const PAGES = ["resume", "prep"];
+const PAGES = ["resume", "prep", "legallens"];
 
 function App() {
   const [page, setPage]                        = useState("resume");
@@ -58,6 +59,12 @@ function App() {
           >
             Prep Kit
           </button>
+          <button
+            className={`page-nav-btn ${page === "legallens" ? "active" : ""}`}
+            onClick={() => switchPage("legallens")}
+          >
+            LegalLens
+          </button>
         </nav>
       </header>
 
@@ -81,6 +88,10 @@ function App() {
       {page === "resume" ? (
         <main className="resume-area">
           <Resume />
+        </main>
+      ) : page === "legallens" ? (
+        <main className="resume-area">
+          <LegalLens />
         </main>
       ) : (
         <div className="body-layout">
