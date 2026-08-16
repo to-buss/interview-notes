@@ -101,7 +101,7 @@ That's already a useful product.
 
 ## 3. Architecture I'd recommend
 
-Given my Java/Spring/Kafka background, I'd build it roughly like this:
+Given my Python/Django/Kafka background, I'd build it roughly like this:
 
 ```
                     ┌──────────────────┐
@@ -112,7 +112,7 @@ Given my Java/Spring/Kafka background, I'd build it roughly like this:
                              ▼
                     ┌──────────────────┐
                     │ Invoice Service  │
-                    │ Spring Boot      │
+                    │ Django           │
                     └────────┬─────────┘
                              │
                              ▼
@@ -169,10 +169,9 @@ Invoice rate = €450/hour
 
 We don't need an LLM. Just:
 
-```java
-if (invoiceRate > agreedRate) {
-    flag(RATE_VIOLATION);
-}
+```python
+if invoice_rate > agreed_rate:
+    flag(RATE_VIOLATION)
 ```
 
 Likewise:
@@ -430,7 +429,7 @@ No AI yet.
 
 Add:
 - PostgreSQL
-- Spring Boot
+- Django
 - REST API
 
 ### Version 3
